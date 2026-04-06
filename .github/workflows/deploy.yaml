@@ -1,4 +1,4 @@
-name: Deploy via SSM (OIDC)
+name: Deploy via VPN
 
 on:
   push:
@@ -7,79 +7,85 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
-    permissions:
-      id-token: write
-      contents: read
-
-    env:
-      AWS_REGION: ap-south-1
-      INSTANCE_ID: i-0bbdf1383d9783465   # 👈 your EC2 instance
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Authenticate using OIDC (no AWS keys)
-      - name: Configure AWS Credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::848747536871:role/oidc_ci_cd
-          aws-region: ${{ env.AWS_REGION }}
-
-      # Optional: Debug identity
-      - name: Verify AWS Identity
-        run: aws sts get-caller-identity
-
-      # Send command to EC2 via SSM
-      - name: Deploy to Private EC2 via SSM
+      # Install OpenVPN
+      - name: Install OpenVPN
         run: |
-          echo "Starting deployment..."
+          sudo apt-get update -y
+          sudo apt-get install -y openvpn curl
 
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --comment "Deploy via GitHub Actions" \
-            --parameters 'commands=[
-              "echo Connected to EC2",
-            ]' \
-            --query "Command.CommandId" \
-            --output text)
+      # Create VPN config file
+      - name: Setup VPN config
+        run: |
+          echo "${{ secrets.OVPN_CONFIG }}" > vpn.ovpn
 
-          echo "Command ID: $COMMAND_ID"
+      # Setup auth (if required)
+      - name: Setup VPN auth
+        env:
+          VPN_USER: ${{ secrets.OVPN_USERNAME }}
+          VPN_PASS: ${{ secrets.OVPN_PASSWORD }}
+        run: |
+          if [ -n "$VPN_USER" ]; then
+            echo -e "$VPN_USER\n$VPN_PASS" > auth.txt
+            echo "auth-user-pass auth.txt" >> vpn.ovpn
+          fi
 
-          echo "Waiting for command to complete..."
+      # Start VPN
+      - name: Start VPN
+        run: |
+          sudo openvpn --config vpn.ovpn --daemon --log vpn.log --verb 3
 
-          # Wait loop
-          for i in {1..15}; do
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id $COMMAND_ID \
-              --instance-id "$INSTANCE_ID" \
-              --query "Status" \
-              --output text)
-
-            echo "Status: $STATUS"
-
-            if [ "$STATUS" = "Success" ]; then
-              echo "Deployment successful ✅"
+      # Wait for VPN connection
+      - name: Wait for VPN
+        run: |
+          echo "Waiting for VPN connection..."
+          for i in {1..20}; do
+            if grep -q "Initialization Sequence Completed" vpn.log; then
+              echo "VPN Connected ✅"
               break
-            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then
-              echo "Deployment failed ❌"
-              aws ssm get-command-invocation \
-                --command-id $COMMAND_ID \
-                --instance-id "$INSTANCE_ID" \
-                --query "StandardErrorContent" \
-                --output text
-              exit 1
             fi
-
-            sleep 3
+            sleep 2
           done
 
-          echo "Fetching output..."
+          if ! grep -q "Initialization Sequence Completed" vpn.log; then
+            echo "VPN FAILED ❌"
+            cat vpn.log
+            exit 1
+          fi
 
-          aws ssm get-command-invocation \
-            --command-id $COMMAND_ID \
-            --instance-id "$INSTANCE_ID" \
-            --query "StandardOutputContent" \
-            --output text
+      # Verify connection (IMPORTANT)
+      - name: Verify VPN
+        run: |
+          echo "Public IP:"
+          curl -s ifconfig.me
+          echo ""
+
+      # Test private EC2 access
+      - name: Test Private EC2
+        run: |
+          ping -c 3 <PRIVATE_EC2_IP>
+          curl http://<PRIVATE_EC2_IP>:<PORT> || true
+
+      # SSH into private EC2 (example deployment)
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: <PRIVATE_EC2_IP>
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /home/ubuntu/app
+            git pull
+            npm install
+            pm2 restart app
+
+      # Cleanup
+      - name: Stop VPN
+        if: always()
+        run: |
+          sudo killall openvpn || true
