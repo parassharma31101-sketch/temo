@@ -1,90 +1,64 @@
-name: VPN Pipeline
+name: Deploy via SSM (OIDC)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
-  run-with-vpn:
+  deploy:
     runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Install dependencies
-      - name: Install OpenVPN
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y openvpn curl
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::848747536871:role/oidc_ci_cd
+          aws-region: ap-south-1
 
-      # Write OVPN config from secret
-      - name: Setup VPN config
+      - name: Deploy to Private EC2 via SSM
         run: |
-          echo "${{ secrets.OVPN_CONFIG }}" > vpn.ovpn
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "i-0bbdf1383d9783465" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "echo Deployment started",
+              # "cd /home/ubuntu/app",
+              # "git pull",
+              # "npm install",
+              # "pm2 restart app"
+            ]' \
+            --query "Command.CommandId" \
+            --output text)
 
-      # Setup auth safely (no YAML-level if)
-      - name: Setup VPN auth (optional)
-        env:
-          VPN_USER: ${{ secrets.OVPN_USERNAME }}
-          VPN_PASS: ${{ secrets.OVPN_PASSWORD }}
-        run: |
-          if [ -n "$VPN_USER" ]; then
-            echo -e "$VPN_USER\n$VPN_PASS" > auth.txt
+          echo "Command ID: $COMMAND_ID"
 
-            if ! grep -q "auth-user-pass" vpn.ovpn; then
-              echo "auth-user-pass auth.txt" >> vpn.ovpn
-            fi
-          fi
+          # Wait for execution
+          for i in {1..10}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id $COMMAND_ID \
+              --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+              --query "Status" \
+              --output text)
 
-      # Start VPN
-      - name: Start VPN
-        run: |
-          sudo openvpn --config vpn.ovpn --daemon --log vpn.log
+            echo "Status: $STATUS"
 
-      # Wait until VPN connects (no fixed sleep)
-      - name: Wait for VPN connection
-        run: |
-          for i in {1..25}; do
-            if grep -q "Initialization Sequence Completed" vpn.log; then
-              echo "VPN Connected ✅"
+            if [ "$STATUS" = "Success" ]; then
               break
             fi
-            echo "Waiting for VPN..."
-            sleep 2
+
+            sleep 3
           done
 
-          if ! grep -q "Initialization Sequence Completed" vpn.log; then
-            echo "VPN connection failed ❌"
-            echo "===== VPN LOG ====="
-            cat vpn.log
-            exit 1
-          fi
-
-      # Verify IP (should be VPN IP)
-      - name: Verify VPN IP
-        run: |
-          echo "Public IP:"
-          curl -s ifconfig.me
-          echo ""
-
-      # Test private resource
-      - name: Test private access
-        run: |
-          curl -v --max-time 15 http://your-private-server || exit 1
-
-      # Your actual job
-      - name: Run your tasks
-        run: |
-          echo "Running tasks inside VPN..."
-          # Example:
-          # npm install
-          # npm run build
-          # curl internal API
-          # connect to DB
-
-      # Always cleanup
-      - name: Stop VPN
-        if: always()
-        run: |
-          sudo killall openvpn || true
+          # Print output
+          aws ssm get-command-invocation \
+            --command-id $COMMAND_ID \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+            --query "StandardOutputContent" \
+            --output text
