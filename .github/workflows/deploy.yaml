@@ -68,20 +68,18 @@ jobs:
       # Test private EC2 connectivity
       - name: Test Private EC2
         run: |
-          ping -c 3 <PRIVATE_EC2_IP> || true
+          ping -c 3 10.0.1.146 || true
 
       # Deploy via SSH
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: <PRIVATE_EC2_IP>
+          host: 10.0.1.146
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /home/ubuntu/app || exit 1
-            git pull
-            npm install
-            pm2 restart app || pm2 start app
+            echo "Hello world"
+            mkdir newFolder
 
       # Cleanup
       - name: Stop VPN
