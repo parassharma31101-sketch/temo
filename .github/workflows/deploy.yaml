@@ -1,0 +1,88 @@
+name: VPN Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  run-with-vpn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Install OpenVPN
+      - name: Install OpenVPN
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y openvpn curl
+
+      # Create VPN config file
+      - name: Setup VPN config
+        run: |
+          echo "${{ secrets.OVPN_CONFIG }}" > vpn.ovpn
+
+      # (Optional) Create auth file if username/password required
+      - name: Setup VPN auth
+        if: ${{ secrets.OVPN_USERNAME != '' }}
+        run: |
+          echo -e "${{ secrets.OVPN_USERNAME }}\n${{ secrets.OVPN_PASSWORD }}" > auth.txt
+
+          # Inject auth into config if not already present
+          if ! grep -q "auth-user-pass" vpn.ovpn; then
+            echo "auth-user-pass auth.txt" >> vpn.ovpn
+          fi
+
+      # Start VPN with logs
+      - name: Start VPN
+        run: |
+          sudo openvpn --config vpn.ovpn --daemon --log vpn.log
+
+      # Wait until VPN is actually ready (no blind sleep)
+      - name: Wait for VPN connection
+        run: |
+          for i in {1..20}; do
+            if grep -q "Initialization Sequence Completed" vpn.log; then
+              echo "VPN Connected ✅"
+              break
+            fi
+            echo "Waiting for VPN..."
+            sleep 2
+          done
+
+          # Fail if not connected
+          if ! grep -q "Initialization Sequence Completed" vpn.log; then
+            echo "VPN connection failed ❌"
+            cat vpn.log
+            exit 1
+          fi
+
+      # Verify public IP (should change)
+      - name: Verify VPN
+        run: |
+          echo "Public IP after VPN:"
+          curl -s ifconfig.me
+          echo ""
+
+      # Test access to private resource
+      - name: Test private access
+        run: |
+          curl -v --max-time 10 http://your-private-server || exit 1
+
+      # Run your actual tasks
+      - name: Run your app tasks
+        run: |
+          echo "Running secure tasks inside VPN..."
+          # Example:
+          # npm install
+          # npm run build
+          # curl internal API
+          # connect to DB
+
+      # Cleanup (important)
+      - name: Stop VPN
+        if: always()
+        run: |
+          sudo killall openvpn || true
