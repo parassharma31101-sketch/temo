@@ -28,11 +28,7 @@ jobs:
             --instance-ids "i-0bbdf1383d9783465" \
             --document-name "AWS-RunShellScript" \
             --parameters 'commands=[
-              "echo Deployment started",
-              # "cd /home/ubuntu/app",
-              # "git pull",
-              # "npm install",
-              # "pm2 restart app"
+              "echo Deployment started"
             ]' \
             --query "Command.CommandId" \
             --output text)
