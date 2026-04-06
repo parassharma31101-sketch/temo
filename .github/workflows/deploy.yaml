@@ -42,10 +42,6 @@ jobs:
             --comment "Deploy via GitHub Actions" \
             --parameters 'commands=[
               "echo Connected to EC2",
-              "cd /home/ubuntu/app || exit 1",
-              "git pull",
-              "npm install",
-              "pm2 restart app || pm2 start app"
             ]' \
             --query "Command.CommandId" \
             --output text)
