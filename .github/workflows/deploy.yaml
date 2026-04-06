@@ -19,7 +19,7 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y openvpn curl
 
-      # Create VPN config
+      # Setup VPN config
       - name: Setup VPN config
         run: |
           echo "${{ secrets.OVPN_CONFIG }}" > vpn.ovpn
@@ -35,41 +35,39 @@ jobs:
             echo "auth-user-pass auth.txt" >> vpn.ovpn
           fi
 
-      # Start VPN (log to /tmp to avoid permission issues)
+      # Start VPN
       - name: Start VPN
         run: |
           sudo openvpn --config vpn.ovpn --daemon --log /tmp/vpn.log --verb 3
 
-      # Wait for VPN connection
+      # Wait for VPN connection (FIXED)
       - name: Wait for VPN
         run: |
           echo "Waiting for VPN connection..."
+
           for i in {1..20}; do
-            if grep -q "Initialization Sequence Completed" /tmp/vpn.log; then
+            if sudo grep -q "Initialization Sequence Completed" /tmp/vpn.log; then
               echo "VPN Connected ✅"
-              break
+              exit 0
             fi
             sleep 2
           done
 
-          if ! grep -q "Initialization Sequence Completed" /tmp/vpn.log; then
-            echo "VPN FAILED ❌"
-            echo "===== VPN LOG ====="
-            cat /tmp/vpn.log
-            exit 1
-          fi
+          echo "VPN FAILED ❌"
+          echo "===== VPN LOG ====="
+          sudo cat /tmp/vpn.log
+          exit 1
 
-      # Verify VPN (IP should change)
+      # Verify VPN
       - name: Verify VPN
         run: |
           echo "Public IP:"
           curl -s ifconfig.me
           echo ""
 
-      # Test connectivity to private EC2
+      # Test private EC2 connectivity
       - name: Test Private EC2
         run: |
-          echo "Testing connectivity..."
           ping -c 3 <PRIVATE_EC2_IP> || true
 
       # Deploy via SSH
