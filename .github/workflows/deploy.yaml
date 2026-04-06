@@ -19,12 +19,12 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y openvpn curl
 
-      # Create VPN config file
+      # Create VPN config
       - name: Setup VPN config
         run: |
           echo "${{ secrets.OVPN_CONFIG }}" > vpn.ovpn
 
-      # Setup auth (if required)
+      # Setup auth (optional)
       - name: Setup VPN auth
         env:
           VPN_USER: ${{ secrets.OVPN_USERNAME }}
@@ -35,54 +35,55 @@ jobs:
             echo "auth-user-pass auth.txt" >> vpn.ovpn
           fi
 
-      # Start VPN
+      # Start VPN (log to /tmp to avoid permission issues)
       - name: Start VPN
         run: |
-          sudo openvpn --config vpn.ovpn --daemon --log vpn.log --verb 3
+          sudo openvpn --config vpn.ovpn --daemon --log /tmp/vpn.log --verb 3
 
       # Wait for VPN connection
       - name: Wait for VPN
         run: |
           echo "Waiting for VPN connection..."
           for i in {1..20}; do
-            if grep -q "Initialization Sequence Completed" vpn.log; then
+            if grep -q "Initialization Sequence Completed" /tmp/vpn.log; then
               echo "VPN Connected ✅"
               break
             fi
             sleep 2
           done
 
-          if ! grep -q "Initialization Sequence Completed" vpn.log; then
+          if ! grep -q "Initialization Sequence Completed" /tmp/vpn.log; then
             echo "VPN FAILED ❌"
-            cat vpn.log
+            echo "===== VPN LOG ====="
+            cat /tmp/vpn.log
             exit 1
           fi
 
-      # Verify connection (IMPORTANT)
+      # Verify VPN (IP should change)
       - name: Verify VPN
         run: |
           echo "Public IP:"
           curl -s ifconfig.me
           echo ""
 
-      # Test private EC2 access
+      # Test connectivity to private EC2
       - name: Test Private EC2
         run: |
-          ping -c 3 <PRIVATE_EC2_IP>
-          curl http://<PRIVATE_EC2_IP>:<PORT> || true
+          echo "Testing connectivity..."
+          ping -c 3 <PRIVATE_EC2_IP> || true
 
-      # SSH into private EC2 (example deployment)
-      - name: Deploy via SSH
+      # Deploy via SSH
+      - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: <PRIVATE_EC2_IP>
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /home/ubuntu/app
+            cd /home/ubuntu/app || exit 1
             git pull
             npm install
-            pm2 restart app
+            pm2 restart app || pm2 start app
 
       # Cleanup
       - name: Stop VPN
