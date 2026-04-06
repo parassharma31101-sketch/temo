@@ -2,48 +2,50 @@ name: VPN Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   run-with-vpn:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Install OpenVPN
+      # Install dependencies
       - name: Install OpenVPN
         run: |
           sudo apt-get update -y
           sudo apt-get install -y openvpn curl
 
-      # Create VPN config file
+      # Write OVPN config from secret
       - name: Setup VPN config
         run: |
           echo "${{ secrets.OVPN_CONFIG }}" > vpn.ovpn
 
-      # (Optional) Create auth file if username/password required
-      - name: Setup VPN auth
-        if: ${{ secrets.OVPN_USERNAME != '' }}
+      # Setup auth safely (no YAML-level if)
+      - name: Setup VPN auth (optional)
+        env:
+          VPN_USER: ${{ secrets.OVPN_USERNAME }}
+          VPN_PASS: ${{ secrets.OVPN_PASSWORD }}
         run: |
-          echo -e "${{ secrets.OVPN_USERNAME }}\n${{ secrets.OVPN_PASSWORD }}" > auth.txt
+          if [ -n "$VPN_USER" ]; then
+            echo -e "$VPN_USER\n$VPN_PASS" > auth.txt
 
-          # Inject auth into config if not already present
-          if ! grep -q "auth-user-pass" vpn.ovpn; then
-            echo "auth-user-pass auth.txt" >> vpn.ovpn
+            if ! grep -q "auth-user-pass" vpn.ovpn; then
+              echo "auth-user-pass auth.txt" >> vpn.ovpn
+            fi
           fi
 
-      # Start VPN with logs
+      # Start VPN
       - name: Start VPN
         run: |
           sudo openvpn --config vpn.ovpn --daemon --log vpn.log
 
-      # Wait until VPN is actually ready (no blind sleep)
+      # Wait until VPN connects (no fixed sleep)
       - name: Wait for VPN connection
         run: |
-          for i in {1..20}; do
+          for i in {1..25}; do
             if grep -q "Initialization Sequence Completed" vpn.log; then
               echo "VPN Connected ✅"
               break
@@ -52,36 +54,36 @@ jobs:
             sleep 2
           done
 
-          # Fail if not connected
           if ! grep -q "Initialization Sequence Completed" vpn.log; then
             echo "VPN connection failed ❌"
+            echo "===== VPN LOG ====="
             cat vpn.log
             exit 1
           fi
 
-      # Verify public IP (should change)
-      - name: Verify VPN
+      # Verify IP (should be VPN IP)
+      - name: Verify VPN IP
         run: |
-          echo "Public IP after VPN:"
+          echo "Public IP:"
           curl -s ifconfig.me
           echo ""
 
-      # Test access to private resource
+      # Test private resource
       - name: Test private access
         run: |
-          curl -v --max-time 10 http://your-private-server || exit 1
+          curl -v --max-time 15 http://your-private-server || exit 1
 
-      # Run your actual tasks
-      - name: Run your app tasks
+      # Your actual job
+      - name: Run your tasks
         run: |
-          echo "Running secure tasks inside VPN..."
+          echo "Running tasks inside VPN..."
           # Example:
           # npm install
           # npm run build
           # curl internal API
           # connect to DB
 
-      # Cleanup (important)
+      # Always cleanup
       - name: Stop VPN
         if: always()
         run: |
